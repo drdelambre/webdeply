@@ -1,0 +1,36 @@
+opsDir = "src/influxdata/ops"
+repoDir = "src/influxdata/influxdb"
+
+pipeline {
+    agent any
+
+    options {
+      buildDiscarder(logRotator(numToKeepStr: '5'))
+      checkoutToSubdirectory(opsDir)
+    }
+
+    environment {
+      IMAGE_TAG = getImageTag("${env.INFLUXDB_SHA}")
+      PROJECT_ROOT =  "${repoDir}/ui"
+      SWAGGER_FILE =  "${repoDir}/http/swagger.yml"
+    }
+
+    stages {
+      stage('build dev') {
+        dir('influxdb') {
+          git url: 'https://github.com/influxdata/influxdb.git'
+        }
+      }
+
+      parallel {
+        stage('build test') {
+          echo "making test"
+        }
+
+        stage('build prod') {
+          echo "making prod"
+        }
+      }
+    }
+}
+
