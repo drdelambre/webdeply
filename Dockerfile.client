@@ -1,0 +1,58 @@
+FROM ubuntu:latest AS base
+
+RUN apt-get update -y && \
+    apt-get install -y \
+        build-essential \
+        curl \
+        git
+
+RUN mkdir /node && curl -sL https://git.io/n-install | N_PREFIX=/node bash -s -- -q
+ENV PATH="/node/bin:${PATH}"
+RUN npm i -g yarn
+
+RUN mkdir /repo
+WORKDIR /repo
+
+# this layer caches the node_modules for the images
+# using the COPY --from=deps pattern allows us to differentiate
+# devDependencies and dependencies in projects that make the
+# distinction to speed image transfers
+FROM base AS deps
+COPY ./package.json /repo/
+COPY ./yarn.lock /repo/
+
+RUN yarn install
+
+# this layer caches the development environment
+FROM base AS env
+COPY --from=deps /repo/package.json ./
+COPY --from=deps /repo/node_modules ./node_modules
+COPY ./.browserslistrc ./
+COPY ./index.d.ts ./
+COPY ./tsconfig.json ./
+COPY ./webpack.* ./
+
+# this layer describes the requirements for the testing environment
+FROM env AS test
+COPY ./.eslintignore ./
+COPY ./.eslintrc.js ./
+COPY ./.npmrc ./
+COPY ./.prettierrc.json ./
+COPY ./jest.config.js ./
+COPY ./jestSetup.ts ./
+COPY ./testSetup.ts ./
+COPY ./tsconfig.test.json ./
+COPY ./mocks ./mocks
+COPY ./cypress.json ./
+COPY ./cypress ./cypress
+COPY ./__mocks__ ./__mocks__
+
+FROM env AS dev
+
+# the port the dev server listens to
+EXPOSE 8080
+# these are the files that need to be mounted to the docker instance
+VOLUME ["/repo/src", "/http/swagger.yml", "/repo/assets", "/repo/.git"]
+
+CMD ["/bin/bash"]
+
