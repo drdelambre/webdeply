@@ -17,18 +17,24 @@ pipeline {
 
     stages {
       stage('build dev') {
-        dir('influxdb') {
-          git url: 'https://github.com/influxdata/influxdb.git'
+        step {
+          dir(repoDir) {
+            git url: 'https://github.com/influxdata/influxdb.git'
+          }
         }
       }
 
       parallel {
         stage('build test') {
-          echo "making test"
+          step {
+            echo "making test"
+          }
         }
 
         stage('build prod') {
-          echo "making prod"
+          step {
+            echo "making prod"
+          }
         }
       }
     }
