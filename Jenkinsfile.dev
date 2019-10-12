@@ -1,5 +1,11 @@
-opsDir = "src/influxdata/ops"
+opsDir = "./src/influxdata/ops/"
 repoDir = "src/influxdata/influxdb"
+
+def getImageTag(commitSha) {
+    short_hash = commitSha.substring(0,7)
+	  println("Images will be tagged: " + short_hash)
+	  return short_hash
+}
 
 pipeline {
     agent any
@@ -17,26 +23,21 @@ pipeline {
 
     stages {
       stage('build dev') {
-        step {
+        steps {
           dir(repoDir) {
-            git url: 'https://github.com/influxdata/influxdb.git'
+              git url: 'https://github.com/influxdata/influxdb.git'
           }
-        }
-      }
-
-      parallel {
-        stage('build test') {
-          step {
-            echo "making test"
+          dir(opsDir) {
+              git url: 'https://github.com/drdelambre/webdeply.git'
           }
-        }
-
-        stage('build prod') {
-          step {
-            echo "making prod"
+          script {
+            def dockerfile = 'Dockerfile.client'
+            def customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}${dockerfile} ${repoDir}/ui")
+            customImage.inside("-v ${repoDir}/http/swagger.yml:/http/swagger.yml -v ${repoDir}/ui/src:/repo/src -v ${repoDir}/ui/assets:/repo/assets -v ./static:/repo/static") {
+                sh 'yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts'
+            }
           }
         }
       }
     }
 }
-

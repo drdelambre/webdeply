@@ -51,6 +51,5 @@ services:
       - ${PROJECT_ROOT}/src:/repo/src:delegated
       - ${PROJECT_ROOT}/assets:/repo/assets:delegated
       - ${SWAGGER_FILE}:/http/swagger.yml
-      - ${GIT_FOLDER}:/repo/.git
       - ./static:/repo/build
     command: "bash -c \"yarn generate && $$(npm bin)/webpack --config webpack.prod.ts\""
