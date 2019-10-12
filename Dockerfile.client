@@ -47,8 +47,6 @@ COPY ./cypress.json ./
 COPY ./cypress ./cypress
 COPY ./__mocks__ ./__mocks__
 
-FROM env AS dev
-
 # the port the dev server listens to
 EXPOSE 8080
 # these are the files that need to be mounted to the docker instance
