@@ -1,43 +1,92 @@
-opsDir = "./src/influxdata/ops/"
+opsDir = "src/influxdata/ops"
 repoDir = "src/influxdata/influxdb"
 
 def getImageTag(commitSha) {
-    short_hash = commitSha.substring(0,7)
-	  println("Images will be tagged: " + short_hash)
-	  return short_hash
+  short_hash = commitSha.substring(0,7)
+  println("Images will be tagged: " + short_hash)
+  return short_hash
 }
 
+def customImage
+
 pipeline {
-    agent any
+  agent any
 
-    options {
-      buildDiscarder(logRotator(numToKeepStr: '5'))
-      checkoutToSubdirectory(opsDir)
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '5'))
+  }
+
+  environment {
+    IMAGE_TAG = getImageTag("${env.INFLUXDB_SHA}")
+    PROJECT_ROOT =  "${repoDir}/ui"
+    SWAGGER_FILE =  "${repoDir}/http/swagger.yml"
+  }
+
+  stages {
+    stage('fetch resources') {
+      steps {
+        dir(repoDir) {
+            git url: 'https://github.com/influxdata/influxdb.git'
+        }
+
+        dir(opsDir) {
+            git url: 'https://github.com/drdelambre/webdeply.git'
+        }
+      }
+    }
+    stage('build dev image') {
+      steps {
+        script {
+          def dockerfile = 'Dockerfile.client'
+          // cannot use docker.build until the Docker Pipeline plugin is updated to 1.18 or above
+          // https://github.com/jenkinsci/docker-workflow-plugin/pull/162
+          customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${repoDir}/ui")
+        }
+      }
     }
 
-    environment {
-      IMAGE_TAG = getImageTag("${env.INFLUXDB_SHA}")
-      PROJECT_ROOT =  "${repoDir}/ui"
-      SWAGGER_FILE =  "${repoDir}/http/swagger.yml"
-    }
+    stage('compilation') {
+      parallel {
+        stage('run tests') {
+          steps {
+            script {
+              def uiFolder = "${WORKSPACE}/${repoDir}/ui"
+              def httpFolder = "${WORKSPACE}/${repoDir}/http"
+              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\"") {
+                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                // with their directory if you want them to work (alex)
+                sh "cd /repo && yarn generate && yarn test"
+              }
+            }
+          }
+        }
 
-    stages {
-      stage('build dev') {
-        steps {
-          dir(repoDir) {
-              git url: 'https://github.com/influxdata/influxdb.git'
-          }
-          dir(opsDir) {
-              git url: 'https://github.com/drdelambre/webdeply.git'
-          }
-          script {
-            def dockerfile = 'Dockerfile.client'
-            def customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}${dockerfile} ${repoDir}/ui")
-            customImage.inside("-v ${repoDir}/http/swagger.yml:/http/swagger.yml -v ${repoDir}/ui/src:/repo/src -v ${repoDir}/ui/assets:/repo/assets -v ./static:/repo/static") {
-                sh 'yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts'
+        stage('build static assets') {
+          steps {
+            script {
+              def uiFolder = "${WORKSPACE}/${repoDir}/ui"
+              def httpFolder = "${WORKSPACE}/${repoDir}/http"
+              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\" -v \"${WORKSPACE}/${opsDir}/static:/repo/build\"") {
+                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                // with their directory if you want them to work (alex)
+                sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+              }
             }
           }
         }
       }
     }
+
+    stage('build prod image') {
+      steps {
+        script {
+          def dockerfile = 'Dockerfile.nginx'
+          customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${opsDir}")
+        }
+      }
+    }
+  }
 }
+

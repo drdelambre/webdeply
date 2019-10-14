@@ -33,7 +33,7 @@ COPY ./tsconfig.json ./
 COPY ./webpack.* ./
 
 # this layer describes the requirements for the testing environment
-FROM env
+FROM env AS test
 COPY ./.eslintignore ./
 COPY ./.eslintrc.js ./
 COPY ./.npmrc ./
@@ -50,7 +50,7 @@ COPY ./__mocks__ ./__mocks__
 # the port the dev server listens to
 EXPOSE 8080
 # these are the files that need to be mounted to the docker instance
-VOLUME ["/repo/src", "/http/swagger.yml", "/repo/assets", "/repo/.git"]
+VOLUME ["/repo/src", "/http/swagger.yml", "/repo/assets"]
 
 CMD ["/bin/bash"]
 
