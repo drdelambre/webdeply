@@ -33,7 +33,7 @@ COPY ./tsconfig.json ./
 COPY ./webpack.* ./
 
 # this layer describes the requirements for the testing environment
-FROM env AS test
+FROM env
 COPY ./.eslintignore ./
 COPY ./.eslintrc.js ./
 COPY ./.npmrc ./
