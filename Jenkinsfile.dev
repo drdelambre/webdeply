@@ -1,5 +1,6 @@
 opsDir = "src/influxdata/ops"
 repoDir = "src/influxdata/influxdb"
+prodTag = "influxdata-ui"
 
 def getImageTag(commitSha) {
   short_hash = commitSha.substring(0,7)
@@ -26,7 +27,7 @@ pipeline {
     stage('fetch resources') {
       steps {
         dir(repoDir) {
-            git url: 'https://github.com/influxdata/influxdb.git'
+            git branch: 'alex_chore_test_junit', url: 'https://github.com/influxdata/influxdb.git'
         }
 
         dir(opsDir) {
@@ -47,22 +48,34 @@ pipeline {
 
     stage('compilation') {
       parallel {
-        stage('run tests') {
+        stage('integration tests') {
           steps {
             script {
               def uiFolder = "${WORKSPACE}/${repoDir}/ui"
               def httpFolder = "${WORKSPACE}/${repoDir}/http"
-              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\"") {
+              def coverageFolder = "${WORKSPACE}/${opsDir}/coverage"
+
+              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\" -v \"${coverageFolder}:/repo/coverage\"") {
                 // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
                 // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
                 // with their directory if you want them to work (alex)
-                sh "cd /repo && yarn generate && yarn test"
+                sh "cd /repo && yarn generate && yarn test:ci"
               }
+            }
+          }
+
+          post {
+            always {
+              junit "${opsDir}/coverage/junit.xml"
             }
           }
         }
 
         stage('build static assets') {
+          environment {
+            STATIC_DIRECTORY = "/static"
+          }
+
           steps {
             script {
               def uiFolder = "${WORKSPACE}/${repoDir}/ui"
@@ -83,10 +96,11 @@ pipeline {
       steps {
         script {
           def dockerfile = 'Dockerfile.nginx'
-          customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${opsDir}")
+          customImage = docker.build("${prodTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${opsDir}")
         }
       }
     }
   }
 }
+
 
