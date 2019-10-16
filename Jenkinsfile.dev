@@ -194,13 +194,13 @@ pipeline {
             })(window, document, 'script', 'dataLayer', 'GTM-NXMTGSW');
             </script>
               <!-- End Google Tag Manager -->
-            """
-            INJECT_BODY = """
-            <!-- Google Tag Manager (noscript) -->
-            <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NXMTGSW" height="0" width="0"
-            style="display:none;visibility:hidden"></iframe></noscript>
-            <!-- End Google Tag Manager (noscript) -->
-            """
+              """
+              INJECT_BODY = """
+              <!-- Google Tag Manager (noscript) -->
+              <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NXMTGSW" height="0" width="0"
+              style="display:none;visibility:hidden"></iframe></noscript>
+              <!-- End Google Tag Manager (noscript) -->
+              """
           }
 
           steps {
@@ -225,6 +225,20 @@ pipeline {
         }
       }
     }
+
+    /*
+       TODO: there is a script in ui/scripts that uploads these, but we dont want to use the
+       git sha as that 1) doesnt exist in just ui and 2) should respect env.IMAGE_TAG as the
+       source of truth (alex)
+
+    stage('honeybadger sourcemaps') {
+      steps {
+        script {
+
+        }
+      }
+    }
+    */
 
     stage('build images') {
       parallel {
@@ -270,7 +284,32 @@ pipeline {
         }
       }
     }
+
+    stage('deploy') {
+      when {
+        environment name: 'DEPLOY', value: 'true'
+      }
+
+      steps {
+        script {
+          container(dindContainer) {
+            kubernetesDeploy (
+              kubeconfigId: 'k8s-deploy-chronografd',
+              configs: 'src/github.com/influxdata/idpe/apps/chronografd/chronografd.yml',
+              enableConfigSubstitution: true
+            )
+            withCredentials([kubeconfigContent(credentialsId: 'k8s-deploy-chronografd', variable: 'KUBECONFIG_CONTENT')]) {
+              def exitCode = sh(script: ''' kubectl rollout status deploy/chronografd -n twodotoh''', returnStatus: true)
+              if ( exitCode != 0 ) {
+                slackSend(color: 'danger', channel: 'chronografd', message: "FAILED to deploy to Acceptance 'Image: ${env.IMAGE_TAG}-a' - 'Build: [${env.BUILD_NUMBER}]' ")
+              } else {
+                slackSend(color: 'good', channel: 'chronografd', message: "Deployed to Acceptance 'Image: ${env.IMAGE_TAG}-a' - 'Build: [${env.BUILD_NUMBER}]' ")
+              }
+            }
+          }
+        }
+      }
+    }
   }
-}
 
 
