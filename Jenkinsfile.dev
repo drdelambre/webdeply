@@ -1,6 +1,9 @@
 opsDir = "src/influxdata/ops"
 repoDir = "src/influxdata/influxdb"
-prodTag = "influxdata-ui"
+
+repoTag = "quay.io/aboatwright/"
+productionTag = "influxdb-ui"
+developmentTag  = "influxdb-ui-dev"
 
 def getImageTag(commitSha) {
   short_hash = commitSha.substring(0,7)
@@ -8,7 +11,7 @@ def getImageTag(commitSha) {
   return short_hash
 }
 
-def customImage
+def devImage
 
 pipeline {
   agent any
@@ -19,29 +22,34 @@ pipeline {
 
   environment {
     IMAGE_TAG = getImageTag("${env.INFLUXDB_SHA}")
-    PROJECT_ROOT =  "${repoDir}/ui"
-    SWAGGER_FILE =  "${repoDir}/http/swagger.yml"
   }
 
   stages {
     stage('fetch resources') {
       steps {
         dir(repoDir) {
-            git branch: 'alex_chore_test_junit', url: 'https://github.com/influxdata/influxdb.git'
+          git branch: 'alex_chore_test_junit', url: 'https://github.com/influxdata/influxdb.git'
         }
 
         dir(opsDir) {
-            git url: 'https://github.com/drdelambre/webdeply.git'
+          git url: 'https://github.com/drdelambre/webdeply.git'
         }
       }
     }
+
     stage('build dev image') {
       steps {
         script {
           def dockerfile = 'Dockerfile.client'
           // cannot use docker.build until the Docker Pipeline plugin is updated to 1.18 or above
           // https://github.com/jenkinsci/docker-workflow-plugin/pull/162
-          customImage = docker.build("local-dev-image:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${repoDir}/ui")
+          devImage = docker.build("${repoTag}${developmentTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${repoDir}/ui")
+        }
+        script {
+          withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+            sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+            sh "docker push ${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+          }
         }
       }
     }
@@ -49,13 +57,22 @@ pipeline {
     stage('compilation') {
       parallel {
         stage('integration tests') {
+          when {
+            environment name: 'RUN_TESTS', value: 'true'
+          }
+
           steps {
             script {
-              def uiFolder = "${WORKSPACE}/${repoDir}/ui"
-              def httpFolder = "${WORKSPACE}/${repoDir}/http"
-              def coverageFolder = "${WORKSPACE}/${opsDir}/coverage"
+              def influxdb = "${WORKSPACE}/${repoDir}"
 
-              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\" -v \"${coverageFolder}:/repo/coverage\"") {
+              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+              def coverageFolder = "-v \"${WORKSPACE}/${opsDir}/coverage:/repo/coverage\""
+
+              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${coverageFolder}"
+
+              devImage.inside(mountString) {
                 // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
                 // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
                 // with their directory if you want them to work (alex)
@@ -65,22 +82,145 @@ pipeline {
           }
 
           post {
-            always {
+            success {
               junit "${opsDir}/coverage/junit.xml"
+              archiveArtifacts artifacts: "${opsDir}/coverage/cobertura-coverage.xml", fingerprint: true
+            }
+
+            failure {
+              // slackSend(channel: 'chronografd', message: "Integration tests have failed on master")
             }
           }
         }
 
-        stage('build static assets') {
+        stage('lint') {
+          when {
+            environment name: 'RUN_LINT', value: 'true'
+          }
+
+          steps {
+            script {
+              def influxdb = "${WORKSPACE}/${repoDir}"
+
+              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+
+              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder}"
+
+              devImage.inside(mountString) {
+                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                // with their directory if you want them to work (alex)
+                sh "cd /repo && yarn generate && yarn lint"
+              }
+            }
+          }
+
+          post {
+            failure {
+              // slackSend(channel: 'chronografd', message: "Linting has failed on master")
+            }
+          }
+        }
+
+        stage('build static assets for acceptance') {
           environment {
+            // routes
+            CLOUD_BILLING_VISIBLE = "true"
+            CLOUD_URL = "https://quartz.a.influxdata.com"
+            CLOUD_LOGOUT_URL = "https://quartz.a.influxdata.com/logout"
+            CLOUD_BILLING_PATH = "/billing"
+            CLOUD_USAGE_PATH = "/usage"
+            CLOUD_CHECKOUT_PATH = "/checkout"
+
+            // honeybadger
+            HONEYBADGER_ENV = "acceptance"
+            HONEYBADGER_KEY = "0c595ef0"
+
+            // build
             STATIC_DIRECTORY = "/static"
           }
 
           steps {
             script {
-              def uiFolder = "${WORKSPACE}/${repoDir}/ui"
-              def httpFolder = "${WORKSPACE}/${repoDir}/http"
-              customImage.inside("-u root:sudo -v \"${httpFolder}/swagger.yml:/http/swagger.yml\" -v \"${uiFolder}/src:/repo/src\" -v \"${uiFolder}/assets:/repo/assets\" -v \"${WORKSPACE}/${opsDir}/static:/repo/build\"") {
+              def influxdb = "${WORKSPACE}/${repoDir}"
+
+              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+              def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static-a:/repo/build\""
+
+              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
+
+              devImage.inside(mountString) {
+                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                // with their directory if you want them to work (alex)
+                sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+              }
+            }
+          }
+        }
+
+        stage('build static assets for production') {
+          environment {
+            // routes
+            CLOUD_BILLING_VISIBLE = "true"
+            CLOUD_URL = "https://cloud2.influxdata.com"
+            CLOUD_LOGOUT_URL = "https://cloud2.influxdata.com/logout"
+            CLOUD_BILLING_PATH = "/billing"
+            CLOUD_USAGE_PATH = "/usage"
+            CLOUD_CHECKOUT_PATH = "/checkout"
+
+            // honeybadger
+            HONEYBADGER_ENV = "production"
+            HONEYBADGER_KEY = "0c595ef0"
+
+            // build
+            STATIC_DIRECTORY = "/static"
+
+            // tracking
+            INJECT_HEADER = """
+            <!-- Google Tag Manager -->
+            <script>
+            (function (w, d, s, l, i) {
+              w[l] = w[l] || [];
+              w[l].push({
+                'gtm.start': new Date().getTime(),
+                event: 'gtm.js'
+              });
+              var f = d.getElementsByTagName(s)[0],
+              j = d.createElement(s),
+              dl = l != 'dataLayer' ? '&l=' + l : '';
+              j.async = true;
+              j.src =
+              'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+              f.parentNode.insertBefore(j, f);
+            })(window, document, 'script', 'dataLayer', 'GTM-NXMTGSW');
+            </script>
+              <!-- End Google Tag Manager -->
+            """
+            INJECT_BODY = """
+            <!-- Google Tag Manager (noscript) -->
+            <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NXMTGSW" height="0" width="0"
+            style="display:none;visibility:hidden"></iframe></noscript>
+            <!-- End Google Tag Manager (noscript) -->
+            """
+          }
+
+          steps {
+            script {
+              def influxdb = "${WORKSPACE}/${repoDir}"
+
+              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+              def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static:/repo/build\""
+
+              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
+
+              devImage.inside(mountString) {
                 // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
                 // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
                 // with their directory if you want them to work (alex)
@@ -92,11 +232,36 @@ pipeline {
       }
     }
 
-    stage('build prod image') {
-      steps {
-        script {
-          def dockerfile = 'Dockerfile.nginx'
-          customImage = docker.build("${prodTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${opsDir}")
+    stage('build images') {
+      parallel {
+        stage('acceptance') {
+          steps {
+            script {
+              def dockerfile = 'Dockerfile.nginx'
+              acceptanceImage = docker.build("${repoTag}${productionTag}:${env.IMAGE_TAG}-a", "-f ${opsDir}/${dockerfile} --build-arg ASSETS=\"./static-a\" ${opsDir}")
+            }
+            script {
+              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                sh "docker push ${repoTag}${productionTag}:${env.IMAGE_TAG}-a"
+              }
+            }
+          }
+        }
+
+        stage ('production') {
+          steps {
+            script {
+              def dockerfile = 'Dockerfile.nginx'
+              docker.build("${repoTag}${productionTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} --build-arg ASSETS=\"./static\" ${opsDir}")
+            }
+            script {
+              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                sh "docker push ${repoTag}${productionTag}:${env.IMAGE_TAG}"
+              }
+            }
+          }
         }
       }
     }
