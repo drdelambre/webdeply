@@ -45,12 +45,6 @@ pipeline {
           // https://github.com/jenkinsci/docker-workflow-plugin/pull/162
           devImage = docker.build("${repoTag}${developmentTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${repoDir}/ui")
         }
-        script {
-          withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-            sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
-            sh "docker push ${repoTag}${developmentTag}:${env.IMAGE_TAG}"
-          }
-        }
       }
     }
 
@@ -259,6 +253,17 @@ pipeline {
               withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
                 sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
                 sh "docker push ${repoTag}${productionTag}:${env.IMAGE_TAG}"
+              }
+            }
+          }
+        }
+
+        stage('dev') {
+          steps {
+            script {
+              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                sh "docker push ${repoTag}${developmentTag}:${env.IMAGE_TAG}"
               }
             }
           }
