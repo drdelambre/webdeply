@@ -1,19 +1,25 @@
 version: "3.4"
 
 services:
+  ingress:
+    build:
+      context: ${PWD}
+      dockerfile: ${PWD}/Dockerfile.ingress
+    links:
+      - influxdb:api
+      - client
+    ports:
+      - 8080:80
+      - 8443:443
+
   influxdb:
     image: quay.io/influxdb/influxdb:2.0.0-alpha
-    ports:
-      - 9999:9999
     volumes:
       - ./.persist/influxdb:/var/lib/influxdb2
     command: influxd run --bolt-path /var/lib/influxdb2/influxd.bolt --engine-path /var/lib/influxdb2/engine --store bolt
 
   client:
-    build:
-      context: ${PROJECT_ROOT}
-      dockerfile: ${PWD}/Dockerfile.client
-      target: dev
+    image: quay.io/aboatwright/influxdb-ui-dev
     environment:
       - NODE_ENV=development
     volumes:
@@ -21,35 +27,4 @@ services:
       - ${PROJECT_ROOT}/assets:/repo/assets:delegated
       - ${SWAGGER_FILE}:/http/swagger.yml
       - ${GIT_FOLDER}:/repo/.git
-    ports:
-      - 8080:8080
-    command: "yarn start:docker"
 
-  test:
-    build:
-      context: ${PROJECT_ROOT}
-      dockerfile: ${PWD}/Dockerfile.client
-      target: test
-    environment:
-      - NODE_ENV=test
-    volumes:
-      - ${PROJECT_ROOT}/src:/repo/src:delegated
-      - ${PROJECT_ROOT}/assets:/repo/assets:delegated
-      - ${SWAGGER_FILE}:/http/swagger.yml
-      - ${GIT_FOLDER}:/repo/.git
-      - ./test:/repo/coverage
-    command: "yarn test"
-
-  static:
-    build:
-      context: ${PROJECT_ROOT}
-      dockerfile: ${PWD}/Dockerfile.client
-      target: dev
-    environment:
-      - NODE_ENV=production
-    volumes:
-      - ${PROJECT_ROOT}/src:/repo/src:delegated
-      - ${PROJECT_ROOT}/assets:/repo/assets:delegated
-      - ${SWAGGER_FILE}:/http/swagger.yml
-      - ./static:/repo/build
-    command: "bash -c \"yarn generate && $$(npm bin)/webpack --config webpack.prod.ts\""

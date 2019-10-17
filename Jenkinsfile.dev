@@ -76,8 +76,11 @@ pipeline {
           }
 
           post {
-            success {
+            always {
               junit "${opsDir}/coverage/junit.xml"
+            }
+
+            success {
               archiveArtifacts artifacts: "${opsDir}/coverage/cobertura-coverage.xml", fingerprint: true
             }
 

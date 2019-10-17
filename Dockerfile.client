@@ -52,5 +52,5 @@ EXPOSE 8080
 # these are the files that need to be mounted to the docker instance
 VOLUME ["/repo/src", "/http/swagger.yml", "/repo/assets"]
 
-CMD ["/bin/bash"]
+CMD ["yarn", "start:docker"]
 

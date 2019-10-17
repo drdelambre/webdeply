@@ -1,0 +1,17 @@
+version: "3.4"
+
+services:
+  client:
+    build:
+      context: ${PROJECT_ROOT}
+      dockerfile: ${PWD}/Dockerfile.client
+      target: dev
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ${PROJECT_ROOT}/src:/repo/src:delegated
+      - ${PROJECT_ROOT}/assets:/repo/assets:delegated
+      - ${SWAGGER_FILE}:/http/swagger.yml
+      - ${GIT_FOLDER}:/repo/.git
+    command: "yarn start:docker"
+

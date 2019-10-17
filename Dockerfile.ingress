@@ -1,0 +1,11 @@
+FROM nginx:alpine
+
+RUN apk add --update openssl netcat-openbsd && rm -rf /var/cache/apk/*
+
+WORKDIR /etc/ssl
+RUN openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
+    -subj "/C=US/ST=Denial/L=Springfield/O=IT/CN=*" \
+    -keyout server.key  -out server.crt
+
+COPY ./ingress.conf /etc/nginx/nginx.conf
+
