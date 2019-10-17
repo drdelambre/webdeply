@@ -4,7 +4,7 @@ services:
   ingress:
     build:
       context: ${PWD}
-      dockerfile: ${PWD}/Dockerfile.ingress
+      dockerfile: ${PWD}/docker/Dockerfile.ingress
     links:
       - influxdb:api
       - client
