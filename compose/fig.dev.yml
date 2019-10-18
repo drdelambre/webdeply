@@ -5,7 +5,6 @@ services:
     build:
       context: ${PROJECT_ROOT}
       dockerfile: ${PWD}/docker/Dockerfile.client
-      target: dev
     environment:
       - NODE_ENV=development
     volumes:

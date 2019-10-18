@@ -1,7 +1,10 @@
+podTemplate = "dind-1-12"
+dindContainer = "dind"
+
 opsDir = "src/influxdata/ops"
 repoDir = "src/influxdata/influxdb"
 
-repoTag = "quay.io/aboatwright/"
+repoTag = "quay.io/influxdb/"
 productionTag = "influxdb-ui"
 developmentTag  = "influxdb-ui-dev"
 
@@ -11,13 +14,42 @@ def getImageTag(commitSha) {
   return short_hash
 }
 
-def devImage
-
 pipeline {
-  agent any
+  agent {
+    node {
+      label "${podTemplate}"
+    }
+  }
 
   options {
     buildDiscarder(logRotator(numToKeepStr: '5'))
+  }
+
+  parameters {
+    booleanParam(
+      name: 'RUN_TESTS',
+      defaultValue: true,
+      description: 'Run integration tests on the build'
+    )
+    booleanParam(
+      name: 'RUN_E2E'
+      defaultValue: false,
+      description: 'Run e2e cypress tests on the build'
+    )
+    booleanParam(
+      name: 'RUN_LINT',
+      defaultValue: false,
+      description: 'Lint the codebase'
+    )
+    booleanParam(
+      name: 'DEPLOY',
+      defaultValue: false,
+      description: 'Deploy the image off into acceptance'
+    )
+    string(
+      name: 'INFLUXDB_SHA',
+      description: 'GIT SHA from Influxdb'
+    )
   }
 
   environment {
@@ -39,11 +71,19 @@ pipeline {
 
     stage('build dev image') {
       steps {
-        script {
-          def dockerfile = 'Dockerfile.client'
-          // cannot use docker.build until the Docker Pipeline plugin is updated to 1.18 or above
-          // https://github.com/jenkinsci/docker-workflow-plugin/pull/162
-          devImage = docker.build("${repoTag}${developmentTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} ${repoDir}/ui")
+        container(dindContainer) {
+          script {
+            def dockerfile = 'Dockerfile.client'
+            def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+            def latestDevTag = "${repoTag}${developmentTag}:latest"
+
+            // cannot use docker.build until the Docker Pipeline plugin is updated to 1.18 or above
+            // https://github.com/jenkinsci/docker-workflow-plugin/pull/162
+            // docker.build("${repoTag}${developmentTag}:${env.IMAGE_TAG}", "-f ${opsDir}/docker/${dockerfile} ${repoDir}/ui")
+            sh "docker build -t ${fullDevTag} -f ${opsDir}/docker/${dockerfile} ${repoDir}/ui"
+            sh "docker tag ${fullDevTag} ${latestDevTag}"
+            sh "docker save -o ${WORKSPACE}/devbox.tar ${fullDevTag}"
+          }
         }
       }
     }
@@ -56,21 +96,26 @@ pipeline {
           }
 
           steps {
-            script {
-              def influxdb = "${WORKSPACE}/${repoDir}"
+            container(dindContainer) {
+              script {
+                def influxdb = "${WORKSPACE}/${repoDir}"
 
-              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
-              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
-              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
-              def coverageFolder = "-v \"${WORKSPACE}/${opsDir}/coverage:/repo/coverage\""
+                def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+                def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+                def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+                def coverageFolder = "-v \"${WORKSPACE}/${opsDir}/coverage:/repo/coverage\""
 
-              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${coverageFolder}"
+                def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${coverageFolder}"
 
-              devImage.inside(mountString) {
-                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
-                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
-                // with their directory if you want them to work (alex)
-                sh "cd /repo && yarn generate && yarn test:ci"
+                def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+
+                sh "docker load -i ${WORKSPACE}/devbox.tar"
+                docker.image("${fullDevTag}").inside(mountString) {
+                  // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                  // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                  // with their directory if you want them to work (alex)
+                  sh "cd /repo && yarn generate && yarn test:ci"
+                }
               }
             }
           }
@@ -85,7 +130,7 @@ pipeline {
             }
 
             failure {
-              // slackSend(channel: 'chronografd', message: "Integration tests have failed on master")
+              slackSend(channel: 'chronografd', message: "Integration tests have failed on master")
             }
           }
         }
@@ -96,27 +141,32 @@ pipeline {
           }
 
           steps {
-            script {
-              def influxdb = "${WORKSPACE}/${repoDir}"
+            container(dindContainer) {
+              script {
+                def influxdb = "${WORKSPACE}/${repoDir}"
 
-              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
-              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
-              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+                def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+                def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+                def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
 
-              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder}"
+                def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder}"
 
-              devImage.inside(mountString) {
-                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
-                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
-                // with their directory if you want them to work (alex)
-                sh "cd /repo && yarn generate && yarn lint"
+                def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+
+                sh "docker load -i ${WORKSPACE}/devbox.tar"
+                docker.image("${fullDevTag}").inside(mountString) {
+                  // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                  // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                  // with their directory if you want them to work (alex)
+                  sh "cd /repo && yarn generate && yarn lint"
+                }
               }
             }
           }
 
           post {
             failure {
-              // slackSend(channel: 'chronografd', message: "Linting has failed on master")
+              slackSend(channel: 'chronografd', message: "Linting has failed on master")
             }
           }
         }
@@ -140,21 +190,26 @@ pipeline {
           }
 
           steps {
-            script {
-              def influxdb = "${WORKSPACE}/${repoDir}"
+            container(dindContainer) {
+              script {
+                def influxdb = "${WORKSPACE}/${repoDir}"
 
-              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
-              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
-              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
-              def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static-a:/repo/build\""
+                def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+                def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+                def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+                def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static-a:/repo/build\""
 
-              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
+                def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
 
-              devImage.inside(mountString) {
-                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
-                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
-                // with their directory if you want them to work (alex)
-                sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+                def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+
+                sh "docker load -i ${WORKSPACE}/devbox.tar"
+                docker.image("${fullDevTag}").inside(mountString) {
+                  // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                  // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                  // with their directory if you want them to work (alex)
+                  sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+                }
               }
             }
           }
@@ -207,21 +262,26 @@ pipeline {
           }
 
           steps {
-            script {
-              def influxdb = "${WORKSPACE}/${repoDir}"
+            container(dindContainer) {
+              script {
+                def influxdb = "${WORKSPACE}/${repoDir}"
 
-              def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
-              def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
-              def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
-              def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static:/repo/build\""
+                def swaggerFile = "-v \"${influxdb}/http/swagger.yml:/http/swagger.yml\""
+                def projectSrc =  "-v \"${influxdb}/ui/src:/repo/src\""
+                def assetsFolder = "-v \"${influxdb}/ui/assets:/repo/assets\""
+                def compiledFolder = "-v \"${WORKSPACE}/${opsDir}/static:/repo/build\""
 
-              def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
+                def mountString = "-u root:sudo ${swaggerFile} ${projectSrc} ${assetsFolder} ${compiledFolder}"
 
-              devImage.inside(mountString) {
-                // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
-                // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
-                // with their directory if you want them to work (alex)
-                sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+                def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+
+                sh "docker load -i ${WORKSPACE}/devbox.tar"
+                docker.image("${fullDevTag}").inside(mountString) {
+                  // theres a bunch of weird permission issues when wrapping this in dir(root) and jenkins
+                  // is super cool and overwrites the workdir in the dockerfile, so prepend all the things
+                  // with their directory if you want them to work (alex)
+                  sh "cd /repo && yarn generate && ./node_modules/.bin/webpack --config webpack.prod.ts"
+                }
               }
             }
           }
@@ -229,32 +289,23 @@ pipeline {
       }
     }
 
-    /*
-       TODO: there is a script in ui/scripts that uploads these, but we dont want to use the
-       git sha as that 1) doesnt exist in just ui and 2) should respect env.IMAGE_TAG as the
-       source of truth (alex)
-
-    stage('honeybadger sourcemaps') {
-      steps {
-        script {
-
-        }
-      }
-    }
-    */
-
     stage('build images') {
       parallel {
         stage('acceptance') {
           steps {
-            script {
-              def dockerfile = 'Dockerfile.nginx'
-              acceptanceImage = docker.build("${repoTag}${productionTag}:${env.IMAGE_TAG}-a", "-f ${opsDir}/${dockerfile} --build-arg ASSETS=\"./static-a\" ${opsDir}")
-            }
-            script {
-              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
-                sh "docker push ${repoTag}${productionTag}:${env.IMAGE_TAG}-a"
+            container(dindContainer) {
+              script {
+                def dockerfile = 'Dockerfile.nginx'
+                def fullProdTag = "${repoTag}${productionTag}:${env.IMAGE_TAG}"
+
+                sh "docker build -t ${fullProdTag}-a -f ${opsDir}/docker/${dockerfile} --build-arg ASSETS=\"./static-a\" ${opsDir}"
+              }
+              script {
+                def fullProdTag = "${repoTag}${productionTag}:${env.IMAGE_TAG}"
+                withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                  sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                  sh "docker push ${fullProdTag}-a"
+                }
               }
             }
           }
@@ -262,14 +313,23 @@ pipeline {
 
         stage ('production') {
           steps {
-            script {
-              def dockerfile = 'Dockerfile.nginx'
-              docker.build("${repoTag}${productionTag}:${env.IMAGE_TAG}", "-f ${opsDir}/${dockerfile} --build-arg ASSETS=\"./static\" ${opsDir}")
-            }
-            script {
-              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
-                sh "docker push ${repoTag}${productionTag}:${env.IMAGE_TAG}"
+            container(dindContainer) {
+              script {
+                def dockerfile = 'Dockerfile.nginx'
+                def fullProdTag = "${repoTag}${productionTag}:${env.IMAGE_TAG}"
+                def latestProdTag = "${repoTag}${productionTag}:latest"
+
+                sh "docker build -t ${fullProdTag} -f ${opsDir}/docker/${dockerfile} --build-arg ASSETS=\"./static\" ${opsDir}"
+                sh "docker tag ${fullProdTag} ${latestProdTag}"
+              }
+
+              script {
+                def fullProdTag = "${repoTag}${productionTag}:${env.IMAGE_TAG}"
+
+                withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                  sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                  sh "docker push ${fullProdTag}"
+                }
               }
             }
           }
@@ -277,10 +337,14 @@ pipeline {
 
         stage('dev') {
           steps {
-            script {
-              withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-                sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
-                sh "docker push ${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+            container(dindContainer) {
+              script {
+                def fullDevTag = "${repoTag}${developmentTag}:${env.IMAGE_TAG}"
+
+                withCredentials([usernamePassword( credentialsId: 'quay-k8scloud', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+                  sh "docker login -u ${USERNAME} -p ${PASSWORD} quay.io"
+                  sh "docker push ${fullDevTag}"
+                }
               }
             }
           }
@@ -314,5 +378,4 @@ pipeline {
       }
     }
   }
-
-
+}

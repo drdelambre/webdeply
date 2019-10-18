@@ -1,4 +1,4 @@
-DOCKER_COMPOSE := docker-compose -f compose/fig.yml -f compose/fig.prod.yml
+DOCKER_COMPOSE := docker-compose -f compose/fig.yml -f compose/fig.dev.yml
 
 start:
 	# if NODE is specified, start that node
